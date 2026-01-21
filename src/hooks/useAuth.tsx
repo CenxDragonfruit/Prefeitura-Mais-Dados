@@ -14,6 +14,7 @@ type AuthContextType = {
   signIn: (e: string, p: string) => Promise<{ data: any; error: any }>;
   signOut: () => Promise<void>;
   checkPermission: (permission: Permission) => boolean;
+  canWriteInModule: (moduleId: string) => Promise<boolean>; // Nova função
 };
 
 const AuthContext = createContext<AuthContextType>({} as any);
@@ -25,7 +26,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [role, setRole] = useState<UserRole>('consulta');
   const [loading, setLoading] = useState(true);
 
-  // Busca perfil em background (não bloqueia a UI)
   const fetchProfile = async (userId: string) => {
     try {
       const { data } = await supabase.from('profiles').select('*').eq('user_id', userId).maybeSingle();
@@ -40,42 +40,29 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     let mounted = true;
-
     const initAuth = async () => {
       try {
-        // TÉCNICA DE CORRIDA:
-        // O Supabase tem 2 segundos para responder. Se não responder, forçamos a liberação.
-        // Isso impede que a tela fique branca/travada para sempre.
         const sessionPromise = supabase.auth.getSession();
         const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject("Timeout"), 2000));
-
         const result: any = await Promise.race([sessionPromise, timeoutPromise]);
         
         if (mounted && result?.data?.session) {
           const s = result.data.session;
           setSession(s);
           setUser(s.user);
-          // Libera a tela IMEDIATAMENTE, perfil carrega depois
           setLoading(false);
           await fetchProfile(s.user.id);
         } else if (mounted) {
-          // Se não tiver sessão ou der timeout
           setLoading(false);
         }
-
       } catch (error) {
-        // Se der erro ou timeout, libera a tela para o usuário não ficar preso
-        console.warn("Auth check demorou ou falhou, liberando UI...", error);
         if (mounted) setLoading(false);
       }
     };
-
     initAuth();
 
-    // Listener para manter sincronia
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
-
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         setSession(session);
         setUser(session?.user ?? null);
@@ -83,18 +70,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (session?.user && !profile) await fetchProfile(session.user.id);
       } 
       else if (event === 'SIGNED_OUT') {
-        setUser(null);
-        setSession(null);
-        setProfile(null);
-        setRole('consulta');
-        setLoading(false);
+        setUser(null); setSession(null); setProfile(null); setRole('consulta'); setLoading(false);
       }
     });
 
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
+    return () => { mounted = false; subscription.unsubscribe(); };
   }, []);
 
   const checkPermission = (permission: Permission): boolean => {
@@ -106,6 +86,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
+  // LÓGICA DE ESCRITA POR MÓDULO
+  const canWriteInModule = async (moduleId: string): Promise<boolean> => {
+    if (role === 'administrador') return true;
+    if (role === 'consulta') return false;
+
+    const { data, error } = await supabase
+      .from('profile_modules')
+      .select('id')
+      .eq('profile_id', profile?.id)
+      .eq('crud_module_id', moduleId)
+      .maybeSingle();
+
+    return !!data && !error;
+  };
+
   const signIn = async (e: string, p: string) => supabase.auth.signInWithPassword({ email: e, password: p });
   
   const signOut = async () => {
@@ -113,20 +108,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setLoading(true);
       await supabase.auth.signOut();
     } finally {
-      setUser(null); setSession(null); setProfile(null); setRole('consulta');
-      setLoading(false);
+      setUser(null); setSession(null); setProfile(null); setRole('consulta'); setLoading(false);
     }
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, profile, role, loading, signIn, signOut, checkPermission }}>
+    <AuthContext.Provider value={{ user, session, profile, role, loading, signIn, signOut, checkPermission, canWriteInModule }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) throw new Error('useAuth deve ser usado dentro de um AuthProvider');
-  return context;
-};
+export const useAuth = () => useContext(AuthContext);
