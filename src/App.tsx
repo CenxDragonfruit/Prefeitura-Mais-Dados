@@ -7,12 +7,13 @@ import { Layout } from "./components/layout/Layout";
 
 // Importação das Páginas
 import Auth from "./pages/Auth";
-import Dashboard from "./pages/Dashboard"; // Garanta que o Dashboard está importado
+import Dashboard from "./pages/Dashboard"; 
 import Modules from "./pages/Modules";
-import NewModule from "./pages/NewModule"; // Página de Criar Módulo
-import EditModule from "./pages/EditModule"; // Página de Editar (se tiver)
-import CrudPage from "./pages/CrudPage";   // A página principal do sistema (Formulário/Tabela)
-import Approvals from "./pages/Approvals"; // A nova página de aprovações
+import NewModule from "./pages/NewModule"; 
+import EditModule from "./pages/EditModule"; 
+import CrudPage from "./pages/CrudPage";   
+import Approvals from "./pages/Approvals"; 
+import Team from "./pages/Team"; // Página de Gestão de Equipe
 import Profile from "./pages/Profile";
 import NotFound from "./pages/NotFound";
 
@@ -35,13 +36,16 @@ const App = () => (
               {/* Gestão de Módulos (Meus Sistemas) */}
               <Route path="/modulos" element={<Modules />} />
               <Route path="/modulos/novo" element={<NewModule />} />
-              <Route path="/modulos/editar/:id" element={<EditModule />} /> {/* Opcional se tiver criado */}
+              <Route path="/modulos/editar/:id" element={<EditModule />} /> 
               
               {/* O Sistema em si (Acessado pelo Slug, ex: /crud/escolas) */}
               <Route path="/crud/:slug" element={<CrudPage />} />
               
               {/* Central de Aprovações */}
               <Route path="/aprovacoes" element={<Approvals />} />
+
+              {/* Gestão de Equipe (RBAC - Supervisores/Admins) */}
+              <Route path="/equipe" element={<Team />} />
               
               {/* Perfil */}
               <Route path="/perfil" element={<Profile />} />

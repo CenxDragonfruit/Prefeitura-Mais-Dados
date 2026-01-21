@@ -1,89 +1,157 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { LayoutDashboard, Database, CheckCircle, Plus, Menu, ChevronLeft, ChevronRight, LogOut, Settings } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { LayoutDashboard, FolderOpen, ClipboardList, PlusCircle, ChevronLeft, ChevronRight, LogOut, UserCircle, Users } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
-import { CrudModule } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-
-const iconMap: Record<string, any> = { Database, CheckCircle };
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
-  const [modules, setModules] = useState<CrudModule[]>([]);
   const location = useLocation();
   const navigate = useNavigate();
-  const { profile, signOut } = useAuth();
   
-  // Pega a inicial (ex: "B" de Bruno)
-  const userInitial = profile?.full_name?.charAt(0).toUpperCase() || 'U';
+  // 1. IMPORTANTE: Pegar o 'role' do hook de autenticação
+  const { profile, signOut, role } = useAuth();
+  
+  const isActive = (path: string) => location.pathname === path;
 
-  useEffect(() => {
-    fetchModules();
-    const channel = supabase.channel('sidebar-modules-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'crud_modules' }, () => fetchModules())
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, []);
-
-  const fetchModules = async () => {
-    const { data } = await supabase.from('crud_modules').select('*').order('name');
-    if (data) setModules(data as CrudModule[]);
+  const handleSignOut = async () => {
+    await signOut();
+    navigate('/auth');
   };
 
-  const isActive = (path: string) => location.pathname === path;
-  const getIcon = (iconName: string) => iconMap[iconName] || Database;
   const navItems = [
-    { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/modulos', icon: Database, label: 'Módulos CRUD' },
-    { path: '/aprovacoes', icon: CheckCircle, label: 'Aprovações' },
+    { path: '/', icon: LayoutDashboard, label: 'Painel Principal' },
+    { path: '/modulos', icon: FolderOpen, label: 'Meus Sistemas' },
+    { path: '/aprovacoes', icon: ClipboardList, label: 'Central de Tarefas' },
   ];
 
-  const NavItem = ({ item, active, onClick, to, isModule = false }: any) => {
-    const content = (
-      <Link to={to} onClick={onClick} className={cn("flex items-center gap-3 rounded-lg transition-all duration-200 group relative", collapsed ? "justify-center w-10 h-10 mx-auto p-0" : "px-3 py-2.5 w-full", active ? "bg-yellow-400 text-[#003B8F] shadow-sm font-bold" : "text-white/80 hover:bg-white/10 hover:text-white")}>
-        <item.icon className={cn("shrink-0 transition-all", collapsed ? "h-5 w-5" : "h-5 w-5")} />
-        <AnimatePresence>{!collapsed && (<motion.span initial={{ opacity: 0, width: 0 }} animate={{ opacity: 1, width: 'auto' }} exit={{ opacity: 0, width: 0 }} className="whitespace-nowrap overflow-hidden text-sm">{item.label}</motion.span>)}</AnimatePresence>
-      </Link>
-    );
-    if (collapsed) return <Tooltip delayDuration={0}><TooltipTrigger asChild>{content}</TooltipTrigger><TooltipContent side="right" className="bg-[#002d6e] text-white border-white/10 ml-2 z-50">{item.label}</TooltipContent></Tooltip>;
-    return content;
-  };
+  // 2. LÓGICA DE PERMISSÃO: Adiciona o link de Equipe apenas para Admin/Supervisor
+  if (role === 'administrador' || role === 'supervisor') {
+      navItems.push({ 
+          path: '/equipe', 
+          icon: Users, 
+          label: 'Gestão de Equipe' 
+      });
+  }
 
   return (
-    <TooltipProvider>
-      <Button variant="ghost" size="icon" className="fixed top-4 left-4 z-50 lg:hidden text-[#003B8F] bg-white/80 backdrop-blur shadow-sm" onClick={() => setCollapsed(!collapsed)}><Menu className="h-5 w-5" /></Button>
-      <motion.aside initial={false} animate={{ width: collapsed ? 80 : 280 }} className={cn("fixed left-0 top-0 h-screen z-40 flex flex-col shadow-2xl bg-[#003B8F] text-white transition-all duration-300 ease-in-out", "lg:relative")}>
-        <div className="flex flex-col h-full overflow-hidden border-r border-white/10">
-          
-          {/* HEADER: Inicial do Usuário */}
-          <div className={cn("flex items-center h-20 bg-[#002d6e] transition-all duration-300", collapsed ? "justify-center px-0" : "px-6")}>
-            <div className="flex items-center gap-3 w-full">
-              <div className="w-10 h-10 flex items-center justify-center shrink-0 bg-yellow-400 rounded-lg shadow-lg mx-auto lg:mx-0 text-[#003B8F] font-bold text-xl border-2 border-white/10 cursor-pointer hover:scale-105 transition-transform" onClick={() => navigate('/perfil')}>
-                {userInitial}
-              </div>
-              <AnimatePresence>{!collapsed && (<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col min-w-[150px]"><h1 className="font-bold text-white text-lg leading-tight tracking-tight">{profile?.full_name?.split(' ')[0] || 'Usuário'}</h1><p className="text-[10px] text-white/70 uppercase tracking-wider">Conta SMTI</p></motion.div>)}</AnimatePresence>
-            </div>
-          </div>
-
-          <nav className="flex-1 py-6 px-3 space-y-4 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-white/20">
-            <div className="space-y-1">{navItems.map((item) => <NavItem key={item.path} item={item} to={item.path} active={isActive(item.path)} />)}</div>
-            {modules.length > 0 && (<div className="space-y-1 pt-4">{!collapsed && <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest px-3 mb-2">Sistemas</p>}{collapsed && <div className="h-px w-8 bg-white/10 mx-auto my-2" />}{modules.map((module) => (<NavItem key={module.id} item={{ ...module, label: module.name, icon: getIcon(module.icon) }} to={`/crud/${module.slug}`} active={isActive(`/crud/${module.slug}`)} isModule />))}</div>)}
-            <div className="pt-4 mt-auto"><NavItem item={{ label: 'Criar Novo', icon: Plus }} to="/modulos/novo" active={isActive('/modulos/novo')} /></div>
-          </nav>
-
-          <div className={cn("bg-[#002d6e] border-t border-white/10 transition-all", collapsed ? "p-3 flex justify-center" : "p-4")}>
-            <div className="flex items-center gap-3 w-full">
-              <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => navigate('/perfil')} className="w-9 h-9 rounded-full bg-white/10 hover:bg-yellow-400 hover:text-[#003B8F] text-white flex items-center justify-center shrink-0 shadow-md transition-colors"><Settings className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Meu Perfil</TooltipContent></Tooltip>
-              {!collapsed && (<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 min-w-0"><p className="text-sm font-medium text-white truncate cursor-pointer hover:underline" onClick={() => navigate('/perfil')}>Configurações</p></motion.div>)}
-              {!collapsed && (<Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={signOut} className="text-white/60 hover:text-red-300 hover:bg-white/5 shrink-0 ml-auto"><LogOut className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Sair</TooltipContent></Tooltip>)}
-            </div>
+    <TooltipProvider delayDuration={0}>
+      <motion.aside 
+        initial={false} 
+        animate={{ width: collapsed ? 80 : 270 }} 
+        className="relative h-screen bg-gradient-to-b from-[#003B8F] to-[#002050] text-white flex flex-col border-r border-white/5 z-20 shadow-2xl transition-all duration-300"
+      >
+        {/* Header Branding */}
+        <div className={cn("flex items-center h-24 transition-all overflow-hidden mb-2", collapsed ? "justify-center px-0" : "px-6")}>
+          <div className="flex items-center gap-3">
+             <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center p-1 shadow-lg shrink-0">
+               <img src="https://www.portovelho.ro.gov.br/logo/Brasao_municipal.svg" alt="Brasão" className="w-full h-full object-contain"/>
+             </div>
+             {!collapsed && (
+               <div className="flex flex-col min-w-[140px] animate-in fade-in duration-300 whitespace-nowrap">
+                 <h1 className="font-bold text-lg leading-none text-white tracking-tight">SMTI</h1>
+                 <p className="text-[10px] text-yellow-400 font-bold uppercase tracking-widest mt-1">Prefeitura PVH</p>
+               </div>
+             )}
           </div>
         </div>
-        <button onClick={() => setCollapsed(!collapsed)} className="absolute -right-3 top-20 w-6 h-6 bg-yellow-400 rounded-full flex items-center justify-center text-[#003B8F] shadow-[0_2px_5px_rgba(0,0,0,0.2)] hover:scale-110 transition-transform z-50 border-2 border-white cursor-pointer">{collapsed ? <ChevronRight className="h-3 w-3 stroke-[4]" /> : <ChevronLeft className="h-3 w-3 stroke-[4]" />}</button>
+
+        {/* Menu de Navegação */}
+        <nav className="flex-1 py-4 px-3 space-y-2 overflow-y-auto overflow-x-hidden scrollbar-none flex flex-col">
+          {navItems.map((item) => {
+            const active = isActive(item.path);
+            return (
+              <Tooltip key={item.path} disabled={!collapsed}>
+                <TooltipTrigger asChild>
+                  <Link 
+                    to={item.path} 
+                    className={cn(
+                      "flex items-center rounded-xl transition-all duration-200 group border min-h-[50px] relative overflow-hidden", 
+                      collapsed ? "justify-center w-full px-0" : "px-3 gap-3 w-full",
+                      // Cores Ativas (Amarelo/Branco) vs Inativas
+                      active 
+                        ? "bg-white/10 text-yellow-400 border-white/5 shadow-inner" 
+                        : "border-transparent text-white/70 hover:bg-white/5 hover:text-white"
+                    )}
+                  >
+                    {/* Barra lateral amarela para item ativo */}
+                    {active && !collapsed && (
+                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-yellow-400 rounded-l-md" />
+                    )}
+                    
+                    <item.icon className={cn(
+                        "h-6 w-6 shrink-0 transition-transform duration-300", 
+                        active ? "text-yellow-400 scale-110" : "group-hover:text-white"
+                    )} />
+                    
+                    {!collapsed && <span className="whitespace-nowrap text-sm font-medium">{item.label}</span>}
+                  </Link>
+                </TooltipTrigger>
+                {collapsed && (
+                  <TooltipContent side="right" className="bg-[#002050] text-white border-white/10 font-medium ml-2 shadow-xl">
+                    {item.label}
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            );
+          })}
+          
+          <div className="my-4 border-t border-white/10 mx-2" />
+
+          {/* 3. LÓGICA DE PERMISSÃO: Botão de Ação Rápida só para ADMIN */}
+          {role === 'administrador' && (
+            <div className={cn("px-0", !collapsed && "px-0")}>
+               {!collapsed && <p className="text-[10px] uppercase text-white/40 font-bold mb-3 px-2 whitespace-nowrap tracking-wider">Ações</p>}
+               
+               <Tooltip disabled={!collapsed}>
+                 <TooltipTrigger asChild>
+                   <Link to="/modulos/novo" className={cn(
+                     "flex items-center rounded-xl text-white hover:bg-green-600 transition-all bg-green-700 shadow-lg shadow-black/20 min-h-[48px]",
+                     collapsed ? "justify-center w-full px-0" : "px-3 gap-3 w-full"
+                   )}>
+                     <PlusCircle className="h-6 w-6 shrink-0" />
+                     {!collapsed && <span className="font-bold text-sm whitespace-nowrap">Novo Sistema</span>}
+                   </Link>
+                 </TooltipTrigger>
+                 {collapsed && <TooltipContent side="right" className="bg-green-800 text-white border-0 ml-2 font-bold">Novo Sistema</TooltipContent>}
+               </Tooltip>
+            </div>
+          )}
+        </nav>
+
+        {/* Footer do Usuário (Card Azul Escuro) */}
+        <div className="mt-auto p-0 bg-[#001835] border-t border-white/5">
+           <div className={cn(
+               "flex items-center transition-all p-4", 
+               collapsed ? "justify-center" : "gap-3"
+            )}>
+             <div onClick={() => navigate('/perfil')} className="w-10 h-10 rounded-full bg-yellow-400 text-[#003B8F] font-bold flex items-center justify-center cursor-pointer hover:ring-2 hover:ring-white transition-all shrink-0 shadow-md relative">
+               {profile?.full_name ? profile.full_name.charAt(0).toUpperCase() : <UserCircle className="h-6 w-6"/>}
+               <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#001835] rounded-full"></span>
+             </div>
+             
+             {!collapsed && (
+               <div className="flex-1 min-w-0 flex flex-col justify-center">
+                 <p className="text-xs font-bold text-white truncate cursor-pointer hover:text-yellow-400 transition-colors" onClick={() => navigate('/perfil')}>
+                   {profile?.full_name?.split(' ')[0] || 'Servidor'}
+                 </p>
+                 <button onClick={handleSignOut} className="text-[10px] text-white/50 hover:text-red-400 flex items-center gap-1 mt-0.5 transition-colors w-fit font-medium hover:underline">
+                   <LogOut className="h-3 w-3"/> Sair
+                 </button>
+               </div>
+             )}
+           </div>
+        </div>
+
+        {/* Botão de Toggle */}
+        <button 
+          onClick={() => setCollapsed(!collapsed)} 
+          className="absolute -right-3 top-24 w-7 h-7 bg-yellow-400 border-2 border-[#003B8F] rounded-full flex items-center justify-center text-[#003B8F] shadow-lg hover:scale-110 transition-all focus:outline-none z-50"
+        >
+           {collapsed ? <ChevronRight className="h-4 w-4 stroke-[3]" /> : <ChevronLeft className="h-4 w-4 stroke-[3]" />}
+        </button>
       </motion.aside>
     </TooltipProvider>
   );

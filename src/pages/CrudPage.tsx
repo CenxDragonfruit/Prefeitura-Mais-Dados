@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
@@ -11,9 +11,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
-import { Plus, ArrowLeft, Search, Pencil, Trash2, Loader2, AlertCircle, FileDown, FileUp, Table as TableIcon } from 'lucide-react';
+import { 
+  Plus, ArrowLeft, Search, Pencil, Trash2, Loader2, AlertCircle, FileDown, FileUp, 
+  Table as TableIcon, Filter, X, Check
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
+import { cn } from '@/lib/utils';
 
 // Função para limpar sujeira do CSV
 const cleanText = (txt: string) => txt ? txt.replace(/^['"]+|['"]+$/g, '').replace(/[\r\n]+/g, '').trim() : '';
@@ -31,8 +37,12 @@ export default function CrudPage() {
   const [records, setRecords] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // Estados de Interface
+  // Estados de Interface e Filtros
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // MUDANÇA: Agora armazena arrays de strings (ex: { status: ['approved', 'pending'], cidade: ['Porto Velho'] })
+  const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>({});
+  
   const [dialogOpen, setDialogOpen] = useState(false);
   const [formData, setFormData] = useState<any>({});
   const [editRecordId, setEditRecordId] = useState<string | null>(null);
@@ -67,7 +77,12 @@ export default function CrudPage() {
   };
 
   // 2. Carregar Dados da Tabela
-  useEffect(() => { if (activeTable) loadTableData(); }, [activeTable]);
+  useEffect(() => { 
+      if (activeTable) {
+          loadTableData();
+          setColumnFilters({}); // Limpa filtros ao trocar de tabela
+      }
+  }, [activeTable]);
 
   const loadTableData = async () => {
     setLoading(true);
@@ -87,7 +102,35 @@ export default function CrudPage() {
     } catch(e) { console.error(e); } finally { setLoading(false); }
   };
 
-  // --- IMPORTAÇÃO CSV (COM A MÁGICA DO BATCH_ID) ---
+  // --- LÓGICA DE FILTRAGEM AVANÇADA ---
+  const filteredRecords = useMemo(() => {
+    return records.filter(r => {
+      // 1. Filtro Global (Search Bar)
+      const matchesGlobal = searchTerm === '' || 
+                            JSON.stringify(r.data).toLowerCase().includes(searchTerm.toLowerCase()) ||
+                            r.status.toLowerCase().includes(searchTerm.toLowerCase());
+      
+      // 2. Filtros por Coluna (Excel Style - Checkbox)
+      const matchesColumns = Object.keys(columnFilters).every(key => {
+          const selectedValues = columnFilters[key];
+          if (!selectedValues || selectedValues.length === 0) return true; // Se não tem nada selecionado, mostra tudo
+
+          // Tratamento especial para Status
+          if (key === 'status') {
+              const statusLabel = r.status === 'approved' ? 'Aprovado' : r.status === 'rejected' ? 'Negado' : 'Análise';
+              return selectedValues.includes(statusLabel);
+          }
+
+          // Tratamento para campos normais
+          const recordVal = String(r.data[key] || '');
+          return selectedValues.includes(recordVal);
+      });
+
+      return matchesGlobal && matchesColumns;
+    });
+  }, [records, searchTerm, columnFilters]);
+
+  // --- IMPORTAÇÃO CSV ---
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
@@ -96,7 +139,6 @@ export default function CrudPage() {
       reader.onload = (event) => {
           const text = event.target?.result as string;
           const lines = text.split(/\r\n|\n/).filter(line => line.trim() !== '');
-          
           if(lines.length < 2) return toast.error("Arquivo inválido.");
           
           const headers = lines[0].split(',').map(h => cleanText(h));
@@ -108,8 +150,6 @@ export default function CrudPage() {
           });
           
           setImportCsvData({ headers, rows });
-          
-          // Auto-mapeamento
           const initialMap: Record<string, string> = {};
           headers.forEach(h => {
               const exactMatch = fields.find(f => f.label.toLowerCase() === h.toLowerCase() || f.name.toLowerCase() === h.toLowerCase());
@@ -126,66 +166,41 @@ export default function CrudPage() {
       if(!importCsvData) return;
       setSaving(true);
       try {
-          // --- AQUI ESTÁ O SEGREDO: CRIAR UM ID ÚNICO PARA O LOTE ---
           const batchId = crypto.randomUUID(); 
-
           const newRecords = importCsvData.rows.map(csvRow => {
               const recordData: any = {};
               let hasData = false;
-              
               Object.keys(importMapping).forEach(csvHeader => {
                   const targetFieldKey = importMapping[csvHeader];
                   if(targetFieldKey && targetFieldKey !== 'ignore') {
                       const value = csvRow[csvHeader];
-                      if(value) {
-                          recordData[targetFieldKey] = value;
-                          hasData = true;
-                      }
+                      if(value) { recordData[targetFieldKey] = value; hasData = true; }
                   }
               });
-              
               if (!hasData) return null;
-
-              // --- INJETA O BATCH_ID NOS DADOS ---
-              // Isso permite que a página de Aprovações agrupe estes registros
               recordData['_batch_id'] = batchId; 
-
-              return {
-                  crud_table_id: activeTable.id,
-                  data: recordData,
-                  created_by: user?.id,
-                  status: 'pending'
-              };
+              return { crud_table_id: activeTable.id, data: recordData, created_by: user?.id, status: 'pending' };
           }).filter(Boolean);
 
           if (newRecords.length === 0) throw new Error("Nenhum dado válido mapeado.");
 
-          // Insere em pedaços de 50 para não travar
           const BATCH_SIZE = 50;
           for(let i=0; i<newRecords.length; i+=BATCH_SIZE) {
               const { error } = await supabase.from('crud_records').insert(newRecords.slice(i, i+BATCH_SIZE));
               if (error) throw error;
           }
-          
           toast.success(`${newRecords.length} registros importados em lote!`);
           await loadTableData();
           setImportModalOpen(false);
           setImportCsvData(null);
-      } catch(e:any) { 
-          toast.error("Erro: " + e.message); 
-      } finally { setSaving(false); }
+      } catch(e:any) { toast.error("Erro: " + e.message); } finally { setSaving(false); }
   };
 
   // --- EXPORTAÇÃO ---
-  const handleExportClick = () => {
-      setExportSelectedFields(fields.map(f => f.name));
-      setExportModalOpen(true);
-  };
-
+  const handleExportClick = () => { setExportSelectedFields(fields.map(f => f.name)); setExportModalOpen(true); };
   const processExport = () => {
     if (filteredRecords.length === 0) { toast.warning("Nada para exportar."); return; }
     const activeFields = fields.filter(f => exportSelectedFields.includes(f.name));
-    
     const headers = ['ID', 'Status', 'Data', ...activeFields.map(f => f.label)];
     const rows = filteredRecords.map(r => {
       const statusLabel = r.status === 'approved' ? 'Aprovado' : r.status === 'rejected' ? 'Negado' : 'Pendente';
@@ -196,7 +211,6 @@ export default function CrudPage() {
       });
       return [r.id, statusLabel, new Date(r.created_at).toLocaleDateString('pt-BR'), ...dataCells].join(',');
     });
-    
     const csvContent = "\uFEFF" + [headers.join(','), ...rows].join('\n');
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }));
@@ -205,36 +219,20 @@ export default function CrudPage() {
     setExportModalOpen(false);
   };
 
-  // --- FORMULÁRIO MANUAL (SEM BATCH_ID) ---
-  const validateForm = () => {
-    const errors: string[] = [];
-    fields.forEach(f => {
-      const val = formData[f.name];
-      if (f.is_required && (!val || val.toString().trim() === '')) errors.push(`"${f.label}" é obrigatório.`);
-    });
-    return errors;
-  };
-
+  // --- CRUD ---
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    const errors = validateForm();
-    if (errors.length > 0) { setValidationErrors(errors); return; }
     setSaving(true);
     try {
-      // Limpa qualquer batch_id que pudesse existir (garante individualidade)
       const cleanData = { ...formData };
       delete cleanData['_batch_id'];
-
       if (editRecordId) {
         await supabase.from('crud_records').update({ data: cleanData, status: 'pending' }).eq('id', editRecordId);
         toast.success('Atualizado!');
         setRecords(prev => prev.map(r => r.id === editRecordId ? { ...r, data: cleanData, status: 'pending' } : r));
       } else {
         const { data: newRec, error } = await supabase.from('crud_records').insert({ 
-            crud_table_id: activeTable.id, 
-            data: cleanData, // Sem batch_id = Validação Individual
-            created_by: user?.id, 
-            status: 'pending' 
+            crud_table_id: activeTable.id, data: cleanData, created_by: user?.id, status: 'pending' 
         }).select().single();
         if (error) throw error;
         toast.success('Salvo!');
@@ -252,8 +250,6 @@ export default function CrudPage() {
       toast.success("Removido.");
     } catch (e) { toast.error("Erro ao excluir."); }
   };
-
-  const filteredRecords = records.filter(r => JSON.stringify(r.data).toLowerCase().includes(searchTerm.toLowerCase()));
 
   if (loading && !module) return <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-[#003B8F]" /></div>;
 
@@ -275,12 +271,10 @@ export default function CrudPage() {
           <Button onClick={handleExportClick} variant="outline" className="bg-white/10 text-white border-white/20 hover:bg-white/20">
             <FileDown className="mr-2 h-4 w-4" /> Exportar
           </Button>
-          
           <input type="file" ref={fileInputRef} accept=".csv" className="hidden" onChange={handleFileSelect} />
           <Button onClick={() => fileInputRef.current?.click()} variant="outline" className="bg-white/10 text-white border-white/20 hover:bg-white/20">
             <FileUp className="mr-2 h-4 w-4" /> Importar CSV
           </Button>
-
           <Button onClick={() => { setFormData({}); setEditRecordId(null); setValidationErrors([]); setDialogOpen(true); }} className="bg-[#22C55E] hover:bg-green-500 text-white border-0 shadow-md">
             <Plus className="mr-2 h-4 w-4" /> Novo Registro
           </Button>
@@ -299,49 +293,97 @@ export default function CrudPage() {
         </div>
       )}
 
-      {/* TABELA DE DADOS */}
+      {/* TABELA DE DADOS E FILTROS */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-h-[400px]">
+        {/* Barra de Busca Global e Contador */}
         <div className="p-4 border-b flex justify-between items-center bg-slate-50">
            <div className="relative max-w-sm w-full">
-             <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-             <Input placeholder={`Pesquisar...`} className="pl-10 bg-white" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <Input placeholder={`Busca global...`} className="pl-10 bg-white" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
            </div>
-           <span className="text-sm text-slate-500">{filteredRecords.length} registros</span>
+           
+           {Object.keys(columnFilters).length > 0 && (
+             <Button variant="ghost" size="sm" onClick={() => setColumnFilters({})} className="text-red-500 hover:bg-red-50 h-8">
+                <X className="mr-2 h-4 w-4"/> Limpar {Object.keys(columnFilters).length} Filtros
+             </Button>
+           )}
+
+           <span className="text-sm text-slate-500 font-medium">
+               {filteredRecords.length} registros
+           </span>
         </div>
         
         <div className="overflow-x-auto">
           {fields.length === 0 ? (<div className="p-12 text-center text-slate-400">Sem campos definidos.</div>) : (
             <Table>
                 <TableHeader>
-                <TableRow>
-                    <TableHead className="w-[100px] font-bold text-[#003B8F]">Status</TableHead>
-                    {fields.map(f => (
-                    <TableHead key={f.id} className="min-w-[150px] font-bold text-slate-700 whitespace-nowrap">{f.label}</TableHead>
-                    ))}
-                    <TableHead className="text-right font-bold text-slate-700 sticky right-0 bg-slate-50">Ações</TableHead>
-                </TableRow>
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                        {/* COLUNA STATUS (Custom Filter) */}
+                        <TableHead className="w-[140px] font-bold text-[#003B8F]">
+                            <ColumnFilter 
+                                title="Status" 
+                                fieldKey="status"
+                                allRecords={records}
+                                selectedValues={columnFilters['status']}
+                                onChange={(vals) => {
+                                    const newFilters = { ...columnFilters };
+                                    if(vals.length > 0) newFilters['status'] = vals;
+                                    else delete newFilters['status'];
+                                    setColumnFilters(newFilters);
+                                }}
+                            />
+                        </TableHead>
+
+                        {/* OUTRAS COLUNAS (Dynamic Filters) */}
+                        {fields.map(f => (
+                            <TableHead key={f.id} className="min-w-[150px] font-bold text-slate-700">
+                                <ColumnFilter 
+                                    title={f.label} 
+                                    fieldKey={f.name}
+                                    allRecords={records}
+                                    selectedValues={columnFilters[f.name]}
+                                    onChange={(vals) => {
+                                        const newFilters = { ...columnFilters };
+                                        if(vals.length > 0) newFilters[f.name] = vals;
+                                        else delete newFilters[f.name];
+                                        setColumnFilters(newFilters);
+                                    }}
+                                />
+                            </TableHead>
+                        ))}
+                        <TableHead className="text-right font-bold text-slate-700 sticky right-0 bg-slate-50 shadow-[-10px_0_10px_-10px_rgba(0,0,0,0.05)]">
+                            Ações
+                        </TableHead>
+                    </TableRow>
                 </TableHeader>
+                
                 <TableBody>
                 {filteredRecords.map((record) => (
-                    <TableRow key={record.id} className="hover:bg-slate-50">
+                    <TableRow key={record.id} className="hover:bg-slate-50 group transition-colors">
                     <TableCell>
                         <Badge className={
-                            record.status === 'approved' ? 'bg-green-100 text-green-700' : 
-                            record.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                            record.status === 'approved' ? 'bg-green-100 text-green-700 hover:bg-green-200' : 
+                            record.status === 'rejected' ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
                         }>
                             {record.status === 'approved' ? 'Aprovado' : record.status === 'rejected' ? 'Negado' : 'Análise'}
                         </Badge>
                     </TableCell>
-                    {fields.map(f => (<TableCell key={f.id} className="truncate max-w-[200px]">{record.data[f.name] || '-'}</TableCell>))}
-                    <TableCell className="text-right sticky right-0 bg-white/90 backdrop-blur-sm">
-                        <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="icon" onClick={() => { setFormData(record.data); setEditRecordId(record.id); setDialogOpen(true); }}><Pencil className="h-4 w-4 text-blue-600" /></Button>
-                        <Button variant="ghost" size="icon" onClick={() => handleDelete(record.id)}><Trash2 className="h-4 w-4 text-red-400" /></Button>
+                    {fields.map(f => (<TableCell key={f.id} className="truncate max-w-[200px] text-sm text-slate-600">{record.data[f.name] || '-'}</TableCell>))}
+                    <TableCell className="text-right sticky right-0 bg-white group-hover:bg-slate-50 shadow-[-10px_0_10px_-10px_rgba(0,0,0,0.05)]">
+                        <div className="flex justify-end gap-1 opacity-100">
+                           <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-blue-50" onClick={() => { setFormData(record.data); setEditRecordId(record.id); setDialogOpen(true); }}><Pencil className="h-4 w-4 text-blue-600" /></Button>
+                           <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-red-50" onClick={() => handleDelete(record.id)}><Trash2 className="h-4 w-4 text-red-400" /></Button>
                         </div>
                     </TableCell>
                     </TableRow>
                 ))}
-                {filteredRecords.length === 0 && <TableRow><TableCell colSpan={fields.length + 2} className="h-32 text-center text-slate-400">Nenhum registro encontrado.</TableCell></TableRow>}
+                {filteredRecords.length === 0 && (
+                    <TableRow>
+                        <TableCell colSpan={fields.length + 2} className="h-40 text-center text-slate-400">
+                            Nenhum registro encontrado.
+                        </TableCell>
+                    </TableRow>
+                )}
                 </TableBody>
             </Table>
           )}
@@ -352,12 +394,11 @@ export default function CrudPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editRecordId ? 'Editar' : 'Novo Registro Manual'}</DialogTitle></DialogHeader>
-          {validationErrors.length > 0 && <Alert variant="destructive"><AlertCircle className="h-4 w-4" /><AlertTitle>Erro</AlertTitle><AlertDescription>{validationErrors[0]}</AlertDescription></Alert>}
           <form onSubmit={handleSave} className="space-y-4 pt-4">
              <div className="grid gap-4 md:grid-cols-2">
                {fields.map(f => (
                  <div key={f.id} className={f.field_type === 'textarea' ? 'col-span-2' : ''}>
-                    <Label className="text-slate-700 font-medium">{f.label} {f.is_required && <span className="text-red-500">*</span>}</Label>
+                    <Label className="text-slate-700 font-medium">{f.label}</Label>
                     {f.field_type === 'textarea' ? <Textarea value={formData[f.name]||''} onChange={e=>setFormData({...formData, [f.name]:e.target.value})} className="mt-1" /> :
                      f.field_type === 'select' ? 
                       <Select value={formData[f.name] || ''} onValueChange={v => setFormData({ ...formData, [f.name]: v })}>
@@ -424,4 +465,80 @@ export default function CrudPage() {
       </Dialog>
     </div>
   );
+}
+
+// --- SUB-COMPONENTE: FILTRO TIPO EXCEL (FACETED) ---
+function ColumnFilter({ title, fieldKey, allRecords, selectedValues = [], onChange }: any) {
+    // 1. Extrai valores únicos
+    const options = useMemo(() => {
+        const unique = new Set<string>();
+        allRecords.forEach((r: any) => {
+            let val = '';
+            if (fieldKey === 'status') {
+                val = r.status === 'approved' ? 'Aprovado' : r.status === 'rejected' ? 'Negado' : 'Análise';
+            } else {
+                val = String(r.data[fieldKey] || '');
+            }
+            if(val.trim()) unique.add(val);
+        });
+        return Array.from(unique).sort();
+    }, [allRecords, fieldKey]);
+
+    const isFiltered = selectedValues.length > 0;
+
+    return (
+        <Popover>
+            <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" className={cn("-ml-3 h-8 data-[state=open]:bg-slate-100", isFiltered && "bg-blue-50 text-blue-600")}>
+                    <span>{title}</span>
+                    {isFiltered ? <Filter className="ml-2 h-4 w-4 fill-blue-600" /> : <Filter className="ml-2 h-3 w-3 text-slate-400" />}
+                    {isFiltered && (
+                         <Badge variant="secondary" className="ml-1 rounded-sm px-1 font-normal bg-blue-100 text-blue-700 h-5">
+                            {selectedValues.length}
+                         </Badge>
+                    )}
+                </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[250px] p-0" align="start">
+                <Command>
+                    <CommandInput placeholder={`Buscar em ${title}...`} />
+                    <CommandList>
+                        <CommandEmpty>Nenhum resultado.</CommandEmpty>
+                        <CommandGroup>
+                            {options.map((option) => {
+                                const isSelected = selectedValues.includes(option);
+                                return (
+                                    <CommandItem
+                                        key={option}
+                                        onSelect={() => {
+                                            if (isSelected) {
+                                                onChange(selectedValues.filter((v:string) => v !== option));
+                                            } else {
+                                                onChange([...selectedValues, option]);
+                                            }
+                                        }}
+                                    >
+                                        <div className={cn("mr-2 flex h-4 w-4 items-center justify-center rounded-sm border border-primary", isSelected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible")}>
+                                            <Check className={cn("h-4 w-4")} />
+                                        </div>
+                                        <span className="truncate" title={option}>{option}</span>
+                                    </CommandItem>
+                                );
+                            })}
+                        </CommandGroup>
+                        {selectedValues.length > 0 && (
+                            <>
+                                <CommandSeparator />
+                                <CommandGroup>
+                                    <CommandItem onSelect={() => onChange([])} className="justify-center text-center">
+                                        Limpar Filtros
+                                    </CommandItem>
+                                </CommandGroup>
+                            </>
+                        )}
+                    </CommandList>
+                </Command>
+            </PopoverContent>
+        </Popover>
+    );
 }
